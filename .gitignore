@@ -1,0 +1,9 @@
+# Generated dashboard output — rebuilt by the workflow, published via Pages artifact.
+site/
+
+# Python
+__pycache__/
+*.pyc
+
+# The data store IS tracked on purpose (it's the durability layer) — do not ignore:
+# data/timeseries.parquet

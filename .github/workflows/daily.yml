@@ -1,0 +1,66 @@
+name: Daily market dashboard
+
+# Runs after the US close on weekdays (22:40 UTC ≈ 6:40pm ET) and on manual trigger.
+# Cron is UTC and does not track DST, so the ET time drifts by an hour seasonally —
+# fine for an end-of-day refresh.
+on:
+  schedule:
+    - cron: "40 22 * * 1-5"
+  workflow_dispatch: {}
+
+# Let the workflow commit the refreshed data store and publish to Pages.
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: daily-dashboard
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Fetch latest data into the store
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python fetch.py
+
+      - name: Build the dashboard
+        run: python build.py
+
+      - name: Commit refreshed data store
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/timeseries.parquet
+          git commit -m "data: daily refresh $(date -u +%Y-%m-%d)" || echo "no changes"
+          git push
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dashboard/site
+
+  deploy:
+    needs: refresh
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
