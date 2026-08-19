@@ -21,9 +21,6 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: dashboard
     steps:
       - uses: actions/checkout@v4
 
@@ -53,7 +50,7 @@ jobs:
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dashboard/site
+          path: site
 
   deploy:
     needs: refresh
