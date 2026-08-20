@@ -4,6 +4,11 @@ Pure read-and-render — no network. Reads the Parquet store, computes derived
 signals, builds interactive Plotly figures, and writes one self-contained page
 to site/index.html. Every panel degrades independently: if a series is missing
 the panel shows a placeholder instead of blanking the page.
+
+Aesthetic: Bloomberg-terminal — black canvas, thin white primary series with
+magenta/green/yellow moving averages, dotted grid, right-hand price axis, and a
+boxed legend that carries each series' latest value (so it never needs to
+overlap the data). Times New Roman throughout; square corners everywhere.
 """
 from __future__ import annotations
 
@@ -21,24 +26,39 @@ SITE_DIR = pathlib.Path(__file__).resolve().parent / "site"
 OUT_PATH = SITE_DIR / "index.html"
 TODAY = pd.Timestamp.today().normalize()
 
-# One shared visual language across every figure.
-C = dict(blue="#1f77b4", red="#d62728", green="#2ca02c", purple="#9467bd",
-         orange="#ff7f0e", brown="#8c564b", pink="#e377c2", cyan="#17becf",
-         grey="#7f7f7f", black="#2b2b2b")
-FONT = "#5f6b7a"   # slate — legible on both light and dark chrome
+# Bloomberg-style palette on black.
+BB = dict(white="#ffffff", magenta="#ff2f92", green="#00c853", yellow="#ffd400",
+          orange="#ff9500", cyan="#26c6da", red="#ff453a", blue="#4d9fff",
+          purple="#b388ff", grey="#9e9e9e", amber="#ffb300")
+INK = "#e8e8e8"          # default text
+MUTE = "#8a8a8a"         # secondary text
+GRID = "rgba(130,130,130,0.28)"
+AXIS = "#5a5a5a"
+SERIF = "Times New Roman, Times, serif"
 
 
-def style(fig: go.Figure, title: str, height: int = 320) -> go.Figure:
+# ── figure styling ──────────────────────────────────────────────────────────
+def style(fig: go.Figure, title: str, height: int = 320, right_axis: bool = True) -> go.Figure:
     fig.update_layout(
-        title=dict(text=title, font=dict(size=15, color=FONT)),
-        height=height, margin=dict(l=55, r=55, t=45, b=35),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color=FONT, size=11),
-        legend=dict(orientation="h", y=1.02, yanchor="bottom", x=0, font=dict(size=10)),
+        title=dict(text=title, x=0.01, xanchor="left",
+                   font=dict(size=15, color=INK, family=SERIF)),
+        height=height, margin=dict(l=18, r=66, t=40, b=46),
+        paper_bgcolor="#000000", plot_bgcolor="#000000",
+        font=dict(color=INK, size=11, family=SERIF),
+        legend=dict(x=0.012, y=0.98, xanchor="left", yanchor="top",
+                    bgcolor="rgba(0,0,0,0.55)", bordercolor=AXIS, borderwidth=1,
+                    font=dict(size=10, color=INK, family=SERIF)),
         hovermode="x unified",
+        hoverlabel=dict(bgcolor="#0a0a0a", bordercolor=AXIS,
+                        font=dict(family=SERIF, color=INK, size=11)),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)", zeroline=False)
-    fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.15)", zeroline=False)
+    axis_kw = dict(showgrid=True, gridcolor=GRID, griddash="dot", zeroline=False,
+                   showline=True, linecolor=AXIS, ticks="outside", tickcolor=AXIS,
+                   tickfont=dict(color=MUTE, size=10, family=SERIF))
+    fig.update_xaxes(**axis_kw)
+    fig.update_yaxes(**axis_kw)
+    if right_axis:
+        fig.update_yaxes(side="right")
     return fig
 
 
@@ -55,6 +75,24 @@ def card(title: str, body: str) -> str:
     return f'<section class="card"><h2>{title}</h2>{body}</section>'
 
 
+def nv(label: str, s: pd.Series, fmt: str = "{:.2f}") -> str:
+    """Legend name carrying the series' latest value — the Bloomberg value box."""
+    s = s.dropna()
+    return f"{label}   {fmt.format(s.iloc[-1])}" if len(s) else label
+
+
+def tag(fig: go.Figure, s: pd.Series, color: str, fmt: str = "{:.2f}") -> None:
+    """A colored last-value chip pinned to the right axis (only the primary line,
+    so chips never stack or overlap)."""
+    s = s.dropna()
+    if s.empty:
+        return
+    fig.add_annotation(x=s.index[-1], y=s.iloc[-1], text=fmt.format(s.iloc[-1]),
+                       showarrow=False, xanchor="left", xshift=6, yanchor="middle",
+                       font=dict(color="#000000", size=10, family=SERIF),
+                       bgcolor=color, borderpad=2)
+
+
 # ── derived-signal helpers ──────────────────────────────────────────────────
 def yoy(s: pd.Series, periods: int) -> pd.Series:
     return s.pct_change(periods) * 100
@@ -64,21 +102,23 @@ def fmt_date(ts) -> str:
     return pd.Timestamp(ts).date().isoformat() if pd.notna(ts) else "—"
 
 
-# ── figure builders (each returns an HTML fragment) ─────────────────────────
+# ── figure builders ─────────────────────────────────────────────────────────
 def fig_macro() -> str:
     gdp, ip, pce = store.get("GDPC1"), store.get("INDPRO"), store.get("PCENDC96")
     if gdp.empty or ip.empty:
         return missing("Year-over-year growth")
+    g, i = yoy(gdp, 4), yoy(ip, 12)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=gdp.index, y=yoy(gdp, 4), name="Real GDP (YoY)",
-                             line=dict(color=C["blue"], width=2)))
-    fig.add_trace(go.Scatter(x=ip.index, y=yoy(ip, 12), name="Industrial Prod. (YoY)",
-                             line=dict(color=C["orange"], width=1.3)))
+    fig.add_trace(go.Scatter(x=g.index, y=g.values, name=nv("Real GDP YoY", g),
+                             line=dict(color=BB["white"], width=1.6)))
+    fig.add_trace(go.Scatter(x=i.index, y=i.values, name=nv("Ind. Prod. YoY", i),
+                             line=dict(color=BB["magenta"], width=1.2)))
     if not pce.empty:
-        fig.add_trace(go.Scatter(x=pce.index, y=yoy(pce, 12), name="Nondurable PCE (YoY)",
-                                 line=dict(color=C["green"], width=1.3)))
-    fig.add_hline(y=0, line=dict(color=FONT, width=1))
-    return div(style(fig, "Output & consumption — YoY growth"))
+        p = yoy(pce, 12)
+        fig.add_trace(go.Scatter(x=p.index, y=p.values, name=nv("Nondur. PCE YoY", p),
+                                 line=dict(color=BB["yellow"], width=1.2)))
+    fig.add_hline(y=0, line=dict(color=AXIS, width=1))
+    return div(style(fig, "Output & consumption — YoY growth (%)"))
 
 
 def fig_curve2s10s() -> str:
@@ -86,11 +126,10 @@ def fig_curve2s10s() -> str:
     if c.empty:
         return missing("2s10s Treasury curve")
     bp = c * 100
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=bp.index, y=bp.values, name="10Y−2Y",
-                             line=dict(color=C["cyan"], width=1.4),
-                             fill="tozeroy", fillcolor="rgba(214,39,40,0.12)"))
-    fig.add_hline(y=0, line=dict(color=FONT, width=1))
+    fig = go.Figure(go.Scatter(x=bp.index, y=bp.values, name=nv("10Y−2Y (bp)", bp, "{:.0f}"),
+                               line=dict(color=BB["white"], width=1.4)))
+    fig.add_hline(y=0, line=dict(color=AXIS, width=1))
+    tag(fig, bp, BB["white"], "{:.0f}")
     return div(style(fig, "2s10s Treasury curve (10Y − 2Y, bp)"))
 
 
@@ -98,14 +137,18 @@ def fig_credit_spreads() -> str:
     ig, hy = store.get("BAMLC0A0CM"), store.get("BAMLH0A0HYM2")
     if ig.empty or hy.empty:
         return missing("Credit spreads")
+    igb, hyb = ig * 100, hy * 100
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(x=ig.index, y=ig * 100, name="IG OAS (bp)",
-                             line=dict(color=C["blue"], width=1.3)), secondary_y=False)
-    fig.add_trace(go.Scatter(x=hy.index, y=hy * 100, name="HY OAS (bp)",
-                             line=dict(color=C["red"], width=1.3)), secondary_y=True)
-    fig.update_yaxes(title_text="IG (bp)", secondary_y=False)
-    fig.update_yaxes(title_text="HY (bp)", secondary_y=True)
-    return div(style(fig, "Credit spreads — IG (left) & HY (right)"))
+    fig.add_trace(go.Scatter(x=igb.index, y=igb.values, name=nv("IG OAS bp", igb, "{:.0f}"),
+                             line=dict(color=BB["cyan"], width=1.2)), secondary_y=False)
+    fig.add_trace(go.Scatter(x=hyb.index, y=hyb.values, name=nv("HY OAS bp", hyb, "{:.0f}"),
+                             line=dict(color=BB["magenta"], width=1.2)), secondary_y=True)
+    style(fig, "Credit spreads — IG (left) & HY (right)", right_axis=False)
+    fig.update_yaxes(title_text="IG bp", secondary_y=False, showgrid=True,
+                     gridcolor=GRID, griddash="dot", tickfont=dict(color=MUTE, family=SERIF))
+    fig.update_yaxes(title_text="HY bp", secondary_y=True, showgrid=False,
+                     tickfont=dict(color=MUTE, family=SERIF))
+    return div(fig)
 
 
 def fig_quality() -> str:
@@ -113,8 +156,9 @@ def fig_quality() -> str:
     if ig.empty or hy.empty:
         return missing("HY − IG quality spread")
     qs = (hy - ig).dropna() * 100
-    fig = go.Figure(go.Scatter(x=qs.index, y=qs.values,
-                               line=dict(color=C["purple"], width=1.3)))
+    fig = go.Figure(go.Scatter(x=qs.index, y=qs.values, name=nv("HY−IG (bp)", qs, "{:.0f}"),
+                               line=dict(color=BB["white"], width=1.3)))
+    tag(fig, qs, BB["white"], "{:.0f}")
     return div(style(fig, "HY − IG quality spread (bp)"))
 
 
@@ -122,12 +166,14 @@ def fig_hyg_lqd() -> str:
     f = store.frame(["HYG", "LQD"]).dropna()
     if f.empty:
         return missing("HYG / LQD ratio")
-    ratio = (f["HYG"] / f["LQD"])
+    ratio = f["HYG"] / f["LQD"]
+    avg = ratio.rolling(63).mean()
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=ratio.index, y=ratio.values, name="HYG/LQD",
-                             line=dict(color=C["green"], width=1.3)))
-    fig.add_trace(go.Scatter(x=ratio.index, y=ratio.rolling(63).mean(), name="63-day avg",
-                             line=dict(color=C["black"], width=1, dash="dash")))
+    fig.add_trace(go.Scatter(x=ratio.index, y=ratio.values, name=nv("HYG/LQD", ratio, "{:.3f}"),
+                             line=dict(color=BB["white"], width=1.2)))
+    fig.add_trace(go.Scatter(x=avg.index, y=avg.values, name=nv("63-day avg", avg, "{:.3f}"),
+                             line=dict(color=BB["yellow"], width=1.1)))
+    tag(fig, ratio, BB["white"], "{:.3f}")
     return div(style(fig, "HYG / LQD price ratio"))
 
 
@@ -137,26 +183,33 @@ def fig_hy_spy() -> str:
         return missing("HY spread vs SPY")
     p = pd.DataFrame({"HY": hy * 100, "SPY": spy}).dropna()
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(x=p.index, y=p["SPY"], name="SPY",
-                             line=dict(color=C["blue"], width=1.2)), secondary_y=False)
-    fig.add_trace(go.Scatter(x=p.index, y=p["HY"], name="HY OAS (bp)",
-                             line=dict(color=C["red"], width=1.2)), secondary_y=True)
-    fig.update_yaxes(title_text="SPY", secondary_y=False)
-    fig.update_yaxes(title_text="HY OAS (bp)", secondary_y=True)
-    return div(style(fig, "SPY vs HY credit spread"))
+    fig.add_trace(go.Scatter(x=p.index, y=p["SPY"], name=nv("SPY", p["SPY"]),
+                             line=dict(color=BB["white"], width=1.2)), secondary_y=False)
+    fig.add_trace(go.Scatter(x=p.index, y=p["HY"], name=nv("HY OAS bp", p["HY"], "{:.0f}"),
+                             line=dict(color=BB["magenta"], width=1.2)), secondary_y=True)
+    style(fig, "SPY vs HY credit spread", right_axis=False)
+    fig.update_yaxes(title_text="SPY", secondary_y=False, showgrid=True, gridcolor=GRID,
+                     griddash="dot", tickfont=dict(color=MUTE, family=SERIF))
+    fig.update_yaxes(title_text="HY bp", secondary_y=True, showgrid=False,
+                     tickfont=dict(color=MUTE, family=SERIF))
+    return div(fig)
 
 
 def fig_vix_trend() -> str:
     vix = store.get("^VIX")
     if vix.empty:
         return missing("VIX level & trend")
+    ma50, ma100, ma200 = vix.rolling(50).mean(), vix.rolling(100).mean(), vix.rolling(200).mean()
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=vix.index, y=vix.values, name="VIX",
-                             line=dict(color=C["pink"], width=1)))
-    fig.add_trace(go.Scatter(x=vix.index, y=vix.rolling(50).mean(), name="50-day MA",
-                             line=dict(color=C["blue"], width=1.3)))
-    fig.add_trace(go.Scatter(x=vix.index, y=vix.rolling(200).mean(), name="200-day MA",
-                             line=dict(color=C["black"], width=1.3)))
+    fig.add_trace(go.Scatter(x=vix.index, y=vix.values, name=nv("VIX", vix),
+                             line=dict(color=BB["white"], width=1.0)))
+    fig.add_trace(go.Scatter(x=ma50.index, y=ma50.values, name=nv("SMAVG (50)", ma50),
+                             line=dict(color=BB["magenta"], width=1.2)))
+    fig.add_trace(go.Scatter(x=ma100.index, y=ma100.values, name=nv("SMAVG (100)", ma100),
+                             line=dict(color=BB["green"], width=1.2)))
+    fig.add_trace(go.Scatter(x=ma200.index, y=ma200.values, name=nv("SMAVG (200)", ma200),
+                             line=dict(color=BB["yellow"], width=1.2)))
+    tag(fig, vix, BB["white"])
     return div(style(fig, "VIX — level & trend"))
 
 
@@ -167,10 +220,10 @@ def fig_move_vix() -> str:
     win = f.iloc[-756:]
     norm = win / win.iloc[0] * 100
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=norm.index, y=norm["^MOVE"], name="MOVE",
-                             line=dict(color=C["brown"], width=1.3)))
-    fig.add_trace(go.Scatter(x=norm.index, y=norm["^VIX"], name="VIX",
-                             line=dict(color=C["pink"], width=1.3)))
+    fig.add_trace(go.Scatter(x=norm.index, y=norm["^MOVE"], name=nv("MOVE", norm["^MOVE"], "{:.0f}"),
+                             line=dict(color=BB["amber"], width=1.3)))
+    fig.add_trace(go.Scatter(x=norm.index, y=norm["^VIX"], name=nv("VIX", norm["^VIX"], "{:.0f}"),
+                             line=dict(color=BB["white"], width=1.3)))
     return div(style(fig, "Bond vol (MOVE) vs equity vol (VIX) — indexed to 100"))
 
 
@@ -180,14 +233,17 @@ def fig_dollar() -> str:
         return missing("US dollar")
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     if not dxy.empty:
-        fig.add_trace(go.Scatter(x=dxy.index, y=dxy.values, name="DXY",
-                                 line=dict(color=C["blue"], width=1.2)), secondary_y=False)
+        fig.add_trace(go.Scatter(x=dxy.index, y=dxy.values, name=nv("DXY", dxy, "{:.1f}"),
+                                 line=dict(color=BB["white"], width=1.2)), secondary_y=False)
     if not twi.empty:
-        fig.add_trace(go.Scatter(x=twi.index, y=twi.values, name="Broad TWI",
-                                 line=dict(color=C["orange"], width=1)), secondary_y=True)
-    fig.update_yaxes(title_text="DXY", secondary_y=False)
-    fig.update_yaxes(title_text="Broad TWI", secondary_y=True)
-    return div(style(fig, "US dollar — DXY & broad TWI"))
+        fig.add_trace(go.Scatter(x=twi.index, y=twi.values, name=nv("Broad TWI", twi, "{:.1f}"),
+                                 line=dict(color=BB["amber"], width=1.1)), secondary_y=True)
+    style(fig, "US dollar — DXY & broad TWI", right_axis=False)
+    fig.update_yaxes(title_text="DXY", secondary_y=False, showgrid=True, gridcolor=GRID,
+                     griddash="dot", tickfont=dict(color=MUTE, family=SERIF))
+    fig.update_yaxes(title_text="TWI", secondary_y=True, showgrid=False,
+                     tickfont=dict(color=MUTE, family=SERIF))
+    return div(fig)
 
 
 def fig_crude() -> str:
@@ -195,11 +251,12 @@ def fig_crude() -> str:
     if wti.empty:
         return missing("Crude oil")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=wti.index, y=wti.values, name="WTI",
-                             line=dict(color=C["black"], width=1.1)))
+    fig.add_trace(go.Scatter(x=wti.index, y=wti.values, name=nv("WTI", wti, "{:.1f}"),
+                             line=dict(color=BB["white"], width=1.1)))
     if not brent.empty:
-        fig.add_trace(go.Scatter(x=brent.index, y=brent.values, name="Brent",
-                                 line=dict(color=C["brown"], width=1)))
+        fig.add_trace(go.Scatter(x=brent.index, y=brent.values, name=nv("Brent", brent, "{:.1f}"),
+                                 line=dict(color=BB["amber"], width=1.1)))
+    tag(fig, wti, BB["white"], "{:.1f}")
     return div(style(fig, "Crude oil — WTI & Brent ($/bbl)"))
 
 
@@ -214,38 +271,41 @@ def fig_megacap() -> str:
     corr = pd.Series(
         [(rets.iloc[i - w:i].corr().values.sum() - n) / (n * (n - 1))
          for i in range(w, len(rets) + 1)], index=idx)
-    disp = (rets.std(axis=1).rolling(w).mean() * 100)
+    disp = rets.std(axis=1).rolling(w).mean() * 100
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(x=corr.index, y=corr.values, name="avg pairwise corr",
-                             line=dict(color=C["red"], width=1.2)), secondary_y=False)
-    fig.add_trace(go.Scatter(x=disp.index, y=disp.values, name="dispersion (%)",
-                             line=dict(color=C["grey"], width=1)), secondary_y=True)
-    fig.update_yaxes(title_text="correlation", secondary_y=False)
-    fig.update_yaxes(title_text="dispersion (%)", secondary_y=True)
-    return div(style(fig, "Mega-cap realized correlation & dispersion"))
+    fig.add_trace(go.Scatter(x=corr.index, y=corr.values, name=nv("avg pairwise corr", corr, "{:.2f}"),
+                             line=dict(color=BB["white"], width=1.2)), secondary_y=False)
+    fig.add_trace(go.Scatter(x=disp.index, y=disp.values, name=nv("dispersion %", disp),
+                             line=dict(color=BB["amber"], width=1.1)), secondary_y=True)
+    style(fig, "Mega-cap realized correlation & dispersion", height=340, right_axis=False)
+    fig.update_yaxes(title_text="corr", secondary_y=False, showgrid=True, gridcolor=GRID,
+                     griddash="dot", tickfont=dict(color=MUTE, family=SERIF))
+    fig.update_yaxes(title_text="disp %", secondary_y=True, showgrid=False,
+                     tickfont=dict(color=MUTE, family=SERIF))
+    return div(fig)
 
 
 def fig_vix_curve() -> str:
-    """Self-built VIX term structure from daily spot snapshots stored over time."""
     tenors = {"^VIX9D": 9, "^VIX": 30, "^VIX3M": 93, "^VIX6M": 186, "^VIX1Y": 365}
     latest = {}
     for t, d in tenors.items():
         s = store.get(t)
         if not s.empty:
-            latest[d] = (s.index[-1], s.iloc[-1])
+            latest[d] = s.iloc[-1]
     if len(latest) < 2:
         return missing("VIX term structure",
                        "self-built from daily snapshots — needs ≥2 tenors stored")
     xs = sorted(latest)
-    ys = [latest[d][1] for d in xs]
+    ys = [latest[d] for d in xs]
     labels = {9: "9D", 30: "VIX", 93: "3M", 186: "6M", 365: "1Y"}
     fig = go.Figure(go.Scatter(x=xs, y=ys, mode="lines+markers+text",
-                               text=[f"{labels[d]}<br>{v:.2f}" for d, v in zip(xs, ys)],
-                               textposition="top center",
-                               line=dict(color=C["blue"], width=2)))
+                               text=[f"{labels[d]} {v:.2f}" for d, v in zip(xs, ys)],
+                               textposition="top center", textfont=dict(color=INK, family=SERIF),
+                               line=dict(color=BB["white"], width=1.8),
+                               marker=dict(color=BB["yellow"], size=7)))
+    style(fig, "VIX term structure — latest snapshot (self-built)")
     fig.update_xaxes(title_text="Horizon (calendar days)")
-    fig.update_yaxes(title_text="Implied vol")
-    return div(style(fig, "VIX term structure — latest snapshot (self-built)"))
+    return div(fig)
 
 
 # ── KPI tiles ───────────────────────────────────────────────────────────────
@@ -261,33 +321,26 @@ def tiles() -> str:
     vix = store.get("^VIX")
     if not vix.empty:
         lvl = vix.iloc[-1]
-        w5 = vix.iloc[-252 * 5:]
-        pct = (w5 < lvl).mean() * 100
+        pct = (vix.iloc[-252 * 5:] < lvl).mean() * 100
         tile("VIX", f"{lvl:.2f}", f"{pct:.0f}th %ile (5y)", vix.index[-1])
-
     hy = store.get("BAMLH0A0HYM2")
     if not hy.empty:
         bp = hy.iloc[-1] * 100
         chg = bp - hy.iloc[-22] * 100 if len(hy) > 22 else float("nan")
         tile("HY OAS", f"{bp:.0f} bp", f"{chg:+.0f} bp / 1m", hy.index[-1])
-
     ig = store.get("BAMLC0A0CM")
     if not ig.empty:
         tile("IG OAS", f"{ig.iloc[-1] * 100:.0f} bp", "invest-grade", ig.index[-1])
-
     c = store.get("T10Y2Y")
     if not c.empty:
         v = c.iloc[-1] * 100
         tile("2s10s", f"{v:+.0f} bp", "inverted" if v < 0 else "positive", c.index[-1])
-
     dxy = store.get("DX-Y.NYB")
     if not dxy.empty:
         tile("DXY", f"{dxy.iloc[-1]:.1f}", "US dollar", dxy.index[-1])
-
     wti = store.get("CL=F")
     if not wti.empty:
         tile("WTI", f"${wti.iloc[-1]:.1f}", "crude / bbl", wti.index[-1])
-
     return '<div class="tiles">' + "".join(out) + "</div>" if out else ""
 
 
@@ -341,58 +394,48 @@ def freshness_row() -> str:
         return ""
     stalest = ao.min()
     age = (TODAY - pd.Timestamp(stalest).normalize()).days
-    return (f'<span class="fresh">stalest series: {fmt_date(stalest)} '
-            f'({age}d old) · {len(ao)} series tracked</span>')
+    return (f'stalest series {fmt_date(stalest)} ({age}d old) · {len(ao)} series tracked')
 
 
 TEMPLATE = """<meta charset="utf-8">
 <title>Cross-Asset Market Monitor</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 <style>
-:root {{ --bg:#f6f7f9; --card:#ffffff; --ink:#1f2733; --muted:#5f6b7a;
-        --line:#e6e9ee; --accent:#1f77b4; }}
-@media (prefers-color-scheme: dark) {{
-  :root {{ --bg:#0f1216; --card:#171b21; --ink:#e6e9ee; --muted:#9aa5b1;
-           --line:#252b33; --accent:#5aa9e6; }}
-}}
-* {{ box-sizing:border-box; }}
-body {{ margin:0; background:var(--bg); color:var(--ink);
-       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }}
-header {{ padding:22px 28px 14px; border-bottom:1px solid var(--line); }}
-h1 {{ margin:0; font-size:20px; letter-spacing:-.2px; }}
-.sub {{ color:var(--muted); font-size:13px; margin-top:4px; }}
-.fresh {{ color:var(--muted); font-size:12px; }}
-main {{ max-width:1240px; margin:0 auto; padding:20px 20px 60px; }}
+* {{ box-sizing:border-box; border-radius:0 !important; }}
+body {{ margin:0; background:#000000; color:#e8e8e8;
+       font-family:"Times New Roman", Times, serif; }}
+header {{ padding:20px 26px 14px; border-bottom:1px solid #333; }}
+h1 {{ margin:0; font-size:22px; font-weight:700; letter-spacing:.2px; }}
+.sub {{ color:#8a8a8a; font-size:13px; margin-top:4px; }}
+main {{ max-width:1280px; margin:0 auto; padding:18px 18px 60px; }}
 .tiles {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
-         gap:12px; margin-bottom:22px; }}
-.tile {{ background:var(--card); border:1px solid var(--line); border-radius:12px;
-        padding:14px 16px; }}
-.tl {{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }}
-.tv {{ font-size:26px; font-weight:650; margin:2px 0; }}
-.ts {{ font-size:12px; color:var(--ink); }}
-.td {{ font-size:11px; color:var(--muted); margin-top:4px; }}
-.grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:16px; }}
-.card {{ background:var(--card); border:1px solid var(--line); border-radius:14px;
-        padding:8px 14px 12px; overflow:hidden; }}
+         gap:10px; margin-bottom:20px; }}
+.tile {{ background:#0a0a0a; border:1px solid #333; padding:12px 14px; }}
+.tl {{ font-size:12px; color:#8a8a8a; text-transform:uppercase; letter-spacing:.6px; }}
+.tv {{ font-size:27px; font-weight:700; margin:2px 0; color:#ffffff; }}
+.ts {{ font-size:12px; color:#e8e8e8; }}
+.td {{ font-size:11px; color:#8a8a8a; margin-top:4px; }}
+.grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }}
+.card {{ background:#000000; border:1px solid #333; padding:6px 12px 10px; overflow:hidden; }}
 .card.wide {{ grid-column:1 / -1; }}
-.card h2 {{ font-size:13px; color:var(--muted); font-weight:600; margin:10px 4px 2px;
-           text-transform:uppercase; letter-spacing:.4px; }}
+.card h2 {{ font-size:13px; color:#8a8a8a; font-weight:700; margin:10px 4px 2px;
+           text-transform:uppercase; letter-spacing:.6px; }}
 .ph {{ display:flex; flex-direction:column; align-items:center; justify-content:center;
-      height:300px; color:var(--muted); text-align:center; gap:6px; }}
+      height:300px; color:#8a8a8a; text-align:center; gap:6px; }}
 .ph span {{ font-size:12px; }}
-table.cal {{ width:100%; border-collapse:collapse; font-size:13px; }}
-table.cal th {{ text-align:left; color:var(--muted); font-weight:600; padding:6px 8px;
-               border-bottom:1px solid var(--line); font-size:11px; text-transform:uppercase; }}
-table.cal td {{ padding:6px 8px; border-bottom:1px solid var(--line); }}
-.badge {{ font-size:11px; padding:1px 7px; border-radius:20px; }}
-.badge.macro {{ background:rgba(31,119,180,.15); color:var(--accent); }}
-.badge.flow {{ background:rgba(127,127,127,.18); color:var(--muted); }}
+table.cal {{ width:100%; border-collapse:collapse; font-size:14px; }}
+table.cal th {{ text-align:left; color:#8a8a8a; font-weight:700; padding:6px 8px;
+               border-bottom:1px solid #333; font-size:11px; text-transform:uppercase; }}
+table.cal td {{ padding:6px 8px; border-bottom:1px solid #1e1e1e; }}
+.badge {{ font-size:11px; padding:1px 8px; border:1px solid #444; }}
+.badge.macro {{ color:#4d9fff; border-color:#274a73; }}
+.badge.flow {{ color:#9e9e9e; border-color:#444; }}
 @media (max-width:820px) {{ .grid {{ grid-template-columns:1fr; }} }}
 </style>
 <header>
   <h1>Cross-Asset Market Monitor</h1>
   <div class="sub">Macro · rates · credit · volatility · FX &amp; commodities · equity internals</div>
-  <div class="sub">Built {built} · {fresh}</div>
+  <div class="sub">{fresh}</div>
 </header>
 <main>
   {tiles}
@@ -416,9 +459,7 @@ def build() -> pathlib.Path:
              f'<div class="grid"><div class="card wide">{fig_megacap()}</div></div>'),
         card("6 · Event & Flow Calendar (next 60 days)", calendar_table()),
     ]
-    html = TEMPLATE.format(
-        built=f"{dt.datetime.now():%Y-%m-%d %H:%M}", fresh=freshness_row(),
-        tiles=tiles(), sections="\n".join(sections))
+    html = TEMPLATE.format(fresh=freshness_row(), tiles=tiles(), sections="\n".join(sections))
     SITE_DIR.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(html, encoding="utf-8")
     return OUT_PATH
