@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import calendar as _cal
 import datetime as dt
+import json
 import pathlib
 
 import numpy as np
@@ -25,6 +26,7 @@ import store
 
 SITE_DIR = pathlib.Path(__file__).resolve().parent / "site"
 OUT_PATH = SITE_DIR / "index.html"
+PCA_DIR = pathlib.Path(__file__).resolve().parent / "data" / "pca"
 TODAY = pd.Timestamp.today().normalize()
 
 # Bloomberg-style palette on black.
@@ -36,6 +38,11 @@ MUTE = "#8a8a8a"         # secondary text
 GRID = "rgba(130,130,130,0.28)"
 AXIS = "#5a5a5a"
 SERIF = "Times New Roman, Times, serif"
+
+# Diverging green↔red on black: red = negative, near-black = zero, green = positive.
+# Used for the PCA correlation matrix and loadings heatmap.
+GR_SCALE = [[0.0, "#ff3b30"], [0.25, "#8e1b16"], [0.5, "#0d0d0d"],
+            [0.75, "#116b2c"], [1.0, "#00e676"]]
 
 
 # ── figure styling ──────────────────────────────────────────────────────────
@@ -286,6 +293,123 @@ def fig_megacap() -> str:
     return div(fig)
 
 
+# ── S&P 500 factor structure (rolling top-100 PCA) ──────────────────────────
+# Rendered from the static snapshot bundle in data/pca/ (produced offline by the
+# rolling_pca_top100_1y notebook + export_pca_dashboard.py). build.py stays pure
+# read-and-render: if the bundle is absent every panel shows a placeholder.
+def _pca_csv(name: str, **kw) -> pd.DataFrame | None:
+    p = PCA_DIR / name
+    if not p.exists():
+        return None
+    return pd.read_csv(p, **kw)
+
+
+def _pca_meta() -> dict:
+    p = PCA_DIR / "meta.json"
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def fig_pca_variance() -> str:
+    """Rolling dominant-mode strength: how much of the top-100 cross-section PC1
+    (and the top-5 modes together) explain, window by window over ~25 years."""
+    d = _pca_csv("diagnostics.csv", index_col=0, parse_dates=True)
+    if d is None or d.empty:
+        return missing("Rolling PCA — dominant-mode strength")
+    pc1, pc5 = d["pc1"] * 100, d["pc1_5"] * 100
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=pc5.index, y=pc5.values, name=nv("Top-5 modes %", pc5, "{:.1f}"),
+                             line=dict(color=BB["amber"], width=1.2)))
+    fig.add_trace(go.Scatter(x=pc1.index, y=pc1.values, name=nv("PC1 (market) %", pc1, "{:.1f}"),
+                             line=dict(color=BB["white"], width=1.4)))
+    tag(fig, pc1, BB["white"], "{:.1f}")
+    return div(style(fig, "Rolling top-100 PCA — variance share of PC1 & top-5 modes (%)",
+                     height=300))
+
+
+def fig_pca_loadings() -> str:
+    """Heatmap of every one of the 100 names' loadings on PC1–PC6, names ordered
+    by their PC1 (market-mode) loading. Green = positive, red = negative."""
+    L = _pca_csv("loadings.csv", index_col=0)
+    if L is None or L.empty:
+        return missing("PCA component loadings by name")
+    cols = [c for c in ["PC1", "PC2", "PC3", "PC4", "PC5", "PC6"] if c in L.columns]
+    L = L[cols].sort_values("PC1", ascending=False)
+    m = float(np.nanmax(np.abs(L.values))) or 0.1
+    # z: rows top→bottom = highest PC1 loader first, so reverse for Plotly's bottom-up y.
+    tickers = list(L.index)
+    fig = go.Figure(go.Heatmap(
+        z=L.values[::-1], x=cols, y=tickers[::-1],
+        colorscale=GR_SCALE, zmid=0, zmin=-m, zmax=m,
+        xgap=0, ygap=0,
+        colorbar=dict(title=dict(text="loading", font=dict(color=MUTE, family=SERIF)),
+                      tickfont=dict(color=MUTE, size=9, family=SERIF), thickness=10, len=0.6),
+        hovertemplate="%{y}  %{x}  %{z:+.3f}<extra></extra>"))
+    fig.update_layout(
+        title=dict(text="Component loadings — 100 names × PC1–PC6 (ordered by PC1)",
+                   x=0.01, xanchor="left", font=dict(size=15, color=INK, family=SERIF)),
+        height=1500, margin=dict(l=54, r=10, t=40, b=30),
+        paper_bgcolor="#000000", plot_bgcolor="#000000",
+        font=dict(color=INK, size=9, family=SERIF))
+    fig.update_xaxes(side="top", tickfont=dict(color=INK, size=10, family=SERIF),
+                     showgrid=False, ticks="", linecolor=AXIS)
+    fig.update_yaxes(tickfont=dict(color=MUTE, size=7, family=SERIF),
+                     showgrid=False, ticks="", autorange=True)
+    return div(fig)
+
+
+def fig_pca_corr() -> str:
+    """Green↔red daily-return correlation matrix among the strongest loaders of
+    PC1–PC3, ordered so each component's cluster is a contiguous block on the
+    diagonal (blocks separated by rules and labelled PC1/PC2/PC3)."""
+    C = _pca_csv("corr_top3.csv", index_col=0)
+    blk = _pca_csv("corr_top3_blocks.csv")
+    if C is None or C.empty:
+        return missing("Correlation matrix — top-3-component names")
+    order = list(C.index)
+    n = len(order)
+    fig = go.Figure(go.Heatmap(
+        z=C.values, x=order, y=order,
+        colorscale=GR_SCALE, zmid=0, zmin=-1, zmax=1, xgap=0, ygap=0,
+        colorbar=dict(title=dict(text="corr", font=dict(color=MUTE, family=SERIF)),
+                      tickfont=dict(color=MUTE, size=9, family=SERIF), thickness=10, len=0.7),
+        hovertemplate="%{y} · %{x}  ρ=%{z:+.2f}<extra></extra>"))
+    fig.update_layout(
+        title=dict(text="Daily-return correlations among top loaders of PC1–PC3",
+                   x=0.01, xanchor="left", font=dict(size=15, color=INK, family=SERIF)),
+        height=760, margin=dict(l=60, r=10, t=54, b=60),
+        paper_bgcolor="#000000", plot_bgcolor="#000000",
+        font=dict(color=INK, size=9, family=SERIF))
+    fig.update_xaxes(tickangle=90, tickfont=dict(color=MUTE, size=7, family=SERIF),
+                     showgrid=False, ticks="", linecolor=AXIS)
+    fig.update_yaxes(autorange="reversed", tickfont=dict(color=MUTE, size=7, family=SERIF),
+                     showgrid=False, ticks="", linecolor=AXIS)
+    # block boundaries + PC labels
+    if blk is not None and not blk.empty:
+        comp = blk.set_index("ticker")["component"].reindex(order)
+        bounds = [i for i in range(1, n) if comp.iloc[i] != comp.iloc[i - 1]]
+        for b in bounds:
+            for kw in (dict(x0=b - 0.5, x1=b - 0.5, y0=-0.5, y1=n - 0.5),
+                       dict(x0=-0.5, x1=n - 0.5, y0=b - 0.5, y1=b - 0.5)):
+                fig.add_shape(type="line", **kw, line=dict(color="#e8e8e8", width=1.1))
+        starts = [0] + bounds + [n]
+        for i in range(len(starts) - 1):
+            mid = (starts[i] + starts[i + 1] - 1) / 2
+            fig.add_annotation(x=mid, y=-0.5, yshift=10, text=f"PC{int(comp.iloc[starts[i]])}",
+                               showarrow=False, xanchor="center", yanchor="bottom",
+                               font=dict(color=INK, size=12, family=SERIF))
+    return div(fig)
+
+
+def pca_subtitle() -> str:
+    m = _pca_meta()
+    if not m:
+        return ""
+    return (f'as-of {m.get("as_of","—")} · top {m.get("top_n","—")} by market cap · '
+            f'{m.get("window_years","1")}y window ({m.get("n_days","—")} days) · '
+            f'PC1 {m.get("pc1_var_pct",0):.1f}% · PC1–3 {m.get("pc1_3_var_pct",0):.1f}% of variance · '
+            f'{m.get("n_corr_names","—")} names span PC1–PC3')
+
+
 # ── calendar (computed flow events + hand-kept macro list) ──────────────────
 MACRO_EVENTS = [
     ("2026-09-16", "FOMC decision (Sep) — SEP/dots"), ("2026-10-28", "FOMC decision (Oct)"),
@@ -383,6 +507,7 @@ main {{ max-width:1280px; margin:0 auto; padding:18px 18px 60px; }}
 .ph {{ display:flex; flex-direction:column; align-items:center; justify-content:center;
       height:300px; color:#8a8a8a; text-align:center; gap:6px; }}
 .ph span {{ font-size:12px; }}
+.pca-sub {{ color:#8a8a8a; font-size:12px; margin:2px 4px 10px; letter-spacing:.3px; }}
 .cal-month {{ margin-bottom:16px; }}
 .cal-month h3 {{ font-size:15px; color:#e8e8e8; font-weight:700; margin:8px 2px 6px; }}
 .cal-grid {{ display:grid; grid-template-columns:repeat(7,1fr);
@@ -424,7 +549,12 @@ def build() -> pathlib.Path:
              f'<div class="card">{fig_crude()}</div></div>'),
         card("5 · Equity Internals",
              f'<div class="grid"><div class="card wide">{fig_megacap()}</div></div>'),
-        card("6 · Event & Flow Calendar (next 60 days)", calendar_html()),
+        card("6 · S&P 500 Factor Structure — rolling top-100 PCA",
+             f'<div class="pca-sub">{pca_subtitle()}</div>'
+             f'<div class="grid"><div class="card wide">{fig_pca_variance()}</div>'
+             f'<div class="card wide">{fig_pca_corr()}</div>'
+             f'<div class="card wide">{fig_pca_loadings()}</div></div>'),
+        card("7 · Event & Flow Calendar (next 60 days)", calendar_html()),
     ]
     html = TEMPLATE.format(fresh=freshness_row(), sections="\n".join(sections))
     SITE_DIR.mkdir(parents=True, exist_ok=True)

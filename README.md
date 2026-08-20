@@ -41,6 +41,30 @@ One-time setup:
 
 Trigger the first run from the **Actions** tab (**Run workflow**).
 
+## S&P 500 factor structure (rolling top-100 PCA)
+
+Section 6 renders a rolling PCA of the top-100 S&P 500 names by market cap
+(1-year trailing correlation window, rebalanced monthly over ~25 years):
+
+- **Dominant-mode strength over time** — PC1 (the market mode) and the top-5
+  modes' share of cross-sectional variance, window by window.
+- **Component loadings** — a green↔red heatmap of all 100 names × PC1–PC6,
+  ordered by PC1 loading.
+- **Correlation matrix** — a green↔red daily-return correlation matrix of the
+  strongest loaders of PC1–PC3, blocked and labelled by component so the factor
+  clusters sit on the diagonal.
+
+Unlike the other panels, this one renders from a **static snapshot** committed in
+`data/pca/` (loadings, explained variance, rolling diagnostics, and the labelled
+correlation submatrix) — the full PCA needs Sharadar membership/market-cap data
+and a 100-name price panel, too heavy for the daily job. `build.py` stays pure
+read-and-render; if `data/pca/` is absent the panels show placeholders.
+
+To refresh the snapshot: re-run `rolling_pca_top100_1y.ipynb`, then
+`export_pca_dashboard.py` (both alongside the price cache in the PCA project
+folder) — it rebuilds the bundle into this repo's `data/pca/`. Commit the
+refreshed CSVs.
+
 ## Notes & known limits
 
 - **The store is the durability layer.** Committing `data/timeseries.parquet` each
