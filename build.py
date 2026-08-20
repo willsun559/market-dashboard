@@ -12,6 +12,7 @@ overlap the data). Times New Roman throughout; square corners everywhere.
 """
 from __future__ import annotations
 
+import calendar as _cal
 import datetime as dt
 import pathlib
 
@@ -285,65 +286,6 @@ def fig_megacap() -> str:
     return div(fig)
 
 
-def fig_vix_curve() -> str:
-    tenors = {"^VIX9D": 9, "^VIX": 30, "^VIX3M": 93, "^VIX6M": 186, "^VIX1Y": 365}
-    latest = {}
-    for t, d in tenors.items():
-        s = store.get(t)
-        if not s.empty:
-            latest[d] = s.iloc[-1]
-    if len(latest) < 2:
-        return missing("VIX term structure",
-                       "self-built from daily snapshots — needs ≥2 tenors stored")
-    xs = sorted(latest)
-    ys = [latest[d] for d in xs]
-    labels = {9: "9D", 30: "VIX", 93: "3M", 186: "6M", 365: "1Y"}
-    fig = go.Figure(go.Scatter(x=xs, y=ys, mode="lines+markers+text",
-                               text=[f"{labels[d]} {v:.2f}" for d, v in zip(xs, ys)],
-                               textposition="top center", textfont=dict(color=INK, family=SERIF),
-                               line=dict(color=BB["white"], width=1.8),
-                               marker=dict(color=BB["yellow"], size=7)))
-    style(fig, "VIX term structure — latest snapshot (self-built)")
-    fig.update_xaxes(title_text="Horizon (calendar days)")
-    return div(fig)
-
-
-# ── KPI tiles ───────────────────────────────────────────────────────────────
-def tiles() -> str:
-    out = []
-
-    def tile(label, value, sub, ts):
-        out.append(
-            f'<div class="tile"><div class="tl">{label}</div>'
-            f'<div class="tv">{value}</div><div class="ts">{sub}</div>'
-            f'<div class="td">as of {fmt_date(ts)}</div></div>')
-
-    vix = store.get("^VIX")
-    if not vix.empty:
-        lvl = vix.iloc[-1]
-        pct = (vix.iloc[-252 * 5:] < lvl).mean() * 100
-        tile("VIX", f"{lvl:.2f}", f"{pct:.0f}th %ile (5y)", vix.index[-1])
-    hy = store.get("BAMLH0A0HYM2")
-    if not hy.empty:
-        bp = hy.iloc[-1] * 100
-        chg = bp - hy.iloc[-22] * 100 if len(hy) > 22 else float("nan")
-        tile("HY OAS", f"{bp:.0f} bp", f"{chg:+.0f} bp / 1m", hy.index[-1])
-    ig = store.get("BAMLC0A0CM")
-    if not ig.empty:
-        tile("IG OAS", f"{ig.iloc[-1] * 100:.0f} bp", "invest-grade", ig.index[-1])
-    c = store.get("T10Y2Y")
-    if not c.empty:
-        v = c.iloc[-1] * 100
-        tile("2s10s", f"{v:+.0f} bp", "inverted" if v < 0 else "positive", c.index[-1])
-    dxy = store.get("DX-Y.NYB")
-    if not dxy.empty:
-        tile("DXY", f"{dxy.iloc[-1]:.1f}", "US dollar", dxy.index[-1])
-    wti = store.get("CL=F")
-    if not wti.empty:
-        tile("WTI", f"${wti.iloc[-1]:.1f}", "crude / bbl", wti.index[-1])
-    return '<div class="tiles">' + "".join(out) + "</div>" if out else ""
-
-
 # ── calendar (computed flow events + hand-kept macro list) ──────────────────
 MACRO_EVENTS = [
     ("2026-09-16", "FOMC decision (Sep) — SEP/dots"), ("2026-10-28", "FOMC decision (Oct)"),
@@ -366,26 +308,51 @@ def _last_bday(y, m):
     return d
 
 
-def calendar_table() -> str:
-    rows = [(pd.to_datetime(d), e, "macro") for d, e in MACRO_EVENTS]
+def calendar_html() -> str:
+    """A real month-grid calendar for the next ~60 days, events dropped onto their
+    day cells. No event-type classification."""
+    window_end = TODAY + pd.Timedelta(days=60)
+
+    events: dict[dt.date, list[str]] = {}
+
+    def add(d, text):
+        d = pd.Timestamp(d)
+        if TODAY <= d <= window_end:
+            events.setdefault(d.date(), []).append(text)
+
+    # Months to display: this month through the month containing TODAY+60.
+    months = []
     cur = TODAY.replace(day=1)
-    for _ in range(4):
-        y, m = cur.year, cur.month
-        quad = m in (3, 6, 9, 12)
-        rows.append((_third_friday(y, m), f"{'quad witching' if quad else 'monthly OpEx'}", "flow"))
-        rows.append((_last_bday(y, m), f"{'quarter' if quad else 'month'}-end rebalance", "flow"))
+    while cur <= window_end:
+        months.append((cur.year, cur.month))
         cur += pd.offsets.MonthBegin(1)
-    df = (pd.DataFrame(rows, columns=["date", "event", "type"])
-          .loc[lambda d: (d["date"] >= TODAY) & (d["date"] <= TODAY + pd.Timedelta(days=60))]
-          .sort_values("date"))
-    if df.empty:
-        return '<div class="ph"><span>no events in the next 60 days</span></div>'
-    body = "".join(
-        f'<tr><td>{fmt_date(r.date)}</td><td>{(r.date - TODAY).days}d</td>'
-        f'<td><span class="badge {r.type}">{r.type}</span></td><td>{r.event}</td></tr>'
-        for r in df.itertuples())
-    return ('<table class="cal"><thead><tr><th>Date</th><th>In</th>'
-            f'<th>Type</th><th>Event</th></tr></thead><tbody>{body}</tbody></table>')
+
+    for d, text in MACRO_EVENTS:
+        add(pd.to_datetime(d), text)
+    for y, m in months:
+        quad = m in (3, 6, 9, 12)
+        add(_third_friday(y, m), "Quad witching" if quad else "Monthly OpEx")
+        add(_last_bday(y, m), "Quarter-end rebalance" if quad else "Month-end rebalance")
+
+    grid = _cal.Calendar(firstweekday=6)                 # Sunday-first (US)
+    dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    today = TODAY.date()
+
+    out = []
+    for y, m in months:
+        cells = "".join(f'<div class="dow">{d}</div>' for d in dow)
+        for week in grid.monthdatescalendar(y, m):
+            for day in week:
+                cls = "cal-cell"
+                if day.month != m:
+                    cls += " other"
+                if day == today:
+                    cls += " today"
+                evs = "".join(f'<div class="cal-ev">{t}</div>' for t in events.get(day, []))
+                cells += f'<div class="{cls}"><div class="dnum">{day.day}</div>{evs}</div>'
+        out.append(f'<div class="cal-month"><h3>{_cal.month_name[m]} {y}</h3>'
+                   f'<div class="cal-grid">{cells}</div></div>')
+    return "".join(out)
 
 
 def freshness_row() -> str:
@@ -408,13 +375,6 @@ header {{ padding:20px 26px 14px; border-bottom:1px solid #333; }}
 h1 {{ margin:0; font-size:22px; font-weight:700; letter-spacing:.2px; }}
 .sub {{ color:#8a8a8a; font-size:13px; margin-top:4px; }}
 main {{ max-width:1280px; margin:0 auto; padding:18px 18px 60px; }}
-.tiles {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
-         gap:10px; margin-bottom:20px; }}
-.tile {{ background:#0a0a0a; border:1px solid #333; padding:12px 14px; }}
-.tl {{ font-size:12px; color:#8a8a8a; text-transform:uppercase; letter-spacing:.6px; }}
-.tv {{ font-size:27px; font-weight:700; margin:2px 0; color:#ffffff; }}
-.ts {{ font-size:12px; color:#e8e8e8; }}
-.td {{ font-size:11px; color:#8a8a8a; margin-top:4px; }}
 .grid {{ display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }}
 .card {{ background:#000000; border:1px solid #333; padding:6px 12px 10px; overflow:hidden; }}
 .card.wide {{ grid-column:1 / -1; }}
@@ -423,13 +383,21 @@ main {{ max-width:1280px; margin:0 auto; padding:18px 18px 60px; }}
 .ph {{ display:flex; flex-direction:column; align-items:center; justify-content:center;
       height:300px; color:#8a8a8a; text-align:center; gap:6px; }}
 .ph span {{ font-size:12px; }}
-table.cal {{ width:100%; border-collapse:collapse; font-size:14px; }}
-table.cal th {{ text-align:left; color:#8a8a8a; font-weight:700; padding:6px 8px;
-               border-bottom:1px solid #333; font-size:11px; text-transform:uppercase; }}
-table.cal td {{ padding:6px 8px; border-bottom:1px solid #1e1e1e; }}
-.badge {{ font-size:11px; padding:1px 8px; border:1px solid #444; }}
-.badge.macro {{ color:#4d9fff; border-color:#274a73; }}
-.badge.flow {{ color:#9e9e9e; border-color:#444; }}
+.cal-month {{ margin-bottom:16px; }}
+.cal-month h3 {{ font-size:15px; color:#e8e8e8; font-weight:700; margin:8px 2px 6px; }}
+.cal-grid {{ display:grid; grid-template-columns:repeat(7,1fr);
+            border-top:1px solid #333; border-left:1px solid #333; }}
+.dow {{ text-align:center; font-size:11px; color:#8a8a8a; text-transform:uppercase;
+       letter-spacing:.5px; padding:6px 0; background:#0a0a0a;
+       border-right:1px solid #333; border-bottom:1px solid #333; }}
+.cal-cell {{ min-height:90px; padding:4px 6px;
+            border-right:1px solid #333; border-bottom:1px solid #333; }}
+.cal-cell .dnum {{ font-size:12px; color:#9e9e9e; }}
+.cal-cell.other .dnum {{ color:#3a3a3a; }}
+.cal-cell.today {{ background:#151515; }}
+.cal-cell.today .dnum {{ color:#ffffff; font-weight:700; }}
+.cal-ev {{ font-size:11px; color:#e8e8e8; margin-top:3px; line-height:1.25;
+          border-left:2px solid #ffb300; padding-left:5px; }}
 @media (max-width:820px) {{ .grid {{ grid-template-columns:1fr; }} }}
 </style>
 <header>
@@ -438,7 +406,6 @@ table.cal td {{ padding:6px 8px; border-bottom:1px solid #1e1e1e; }}
   <div class="sub">{fresh}</div>
 </header>
 <main>
-  {tiles}
   {sections}
 </main>
 """
@@ -452,14 +419,14 @@ def build() -> pathlib.Path:
              f'<div class="card">{fig_quality()}</div><div class="card">{fig_hyg_lqd()}</div>'
              f'<div class="card">{fig_hy_spy()}</div></div>'),
         card("3 · Volatility", f'<div class="grid"><div class="card">{fig_vix_trend()}</div>'
-             f'<div class="card">{fig_move_vix()}</div><div class="card">{fig_vix_curve()}</div></div>'),
+             f'<div class="card">{fig_move_vix()}</div></div>'),
         card("4 · FX & Commodities", f'<div class="grid"><div class="card">{fig_dollar()}</div>'
              f'<div class="card">{fig_crude()}</div></div>'),
         card("5 · Equity Internals",
              f'<div class="grid"><div class="card wide">{fig_megacap()}</div></div>'),
-        card("6 · Event & Flow Calendar (next 60 days)", calendar_table()),
+        card("6 · Event & Flow Calendar (next 60 days)", calendar_html()),
     ]
-    html = TEMPLATE.format(fresh=freshness_row(), tiles=tiles(), sections="\n".join(sections))
+    html = TEMPLATE.format(fresh=freshness_row(), sections="\n".join(sections))
     SITE_DIR.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(html, encoding="utf-8")
     return OUT_PATH
